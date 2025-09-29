@@ -1,0 +1,9 @@
+.dart_tool/
+.idea/
+.vscode/
+build/
+ios/Pods/
+pubspec.lock
+assets/models/**/model.onnx
+assets/tessdata/*.traineddata
+
