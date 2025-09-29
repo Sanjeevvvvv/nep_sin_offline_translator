@@ -13,6 +13,71 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements-ci.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install Python deps for ONNX export
+        working-directory: nep_sin_offline_translator
+        run: |
+          echo "optimum[onnxruntime]\ntransformers==4.43.3\nsentencepiece\nonnx\nonnxruntime\nonnxruntime-tools" > requirements-ci.txt
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Prepare assets and export models
+        working-directory: nep_sin_offline_translator
+        run: |
+          mkdir -p assets/models/ne_en assets/models/si_en assets/tessdata
+          # Download tessdata_fast traineddata
+          curl -L -o assets/tessdata/nep.traineddata https://github.com/tesseract-ocr/tessdata_fast/raw/main/nep.traineddata
+          curl -L -o assets/tessdata/sin.traineddata https://github.com/tesseract-ocr/tessdata_fast/raw/main/sin.traineddata
+          curl -L -o assets/tessdata/eng.traineddata https://github.com/tesseract-ocr/tessdata_fast/raw/main/eng.traineddata
+          # Export and quantize Marian models to ONNX
+          python - << 'PY'
+from optimum.onnxruntime import ORTModelForSeq2SeqLM
+from transformers import AutoTokenizer
+from pathlib import Path
+import json
+
+def export(model_id: str, out_dir: str):
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    tok = AutoTokenizer.from_pretrained(model_id, use_fast=True)
+    model = ORTModelForSeq2SeqLM.from_pretrained(model_id, export=True, use_io_binding=False)
+    model.save_pretrained(out)
+    tok.save_pretrained(out)
+    model_quant = ORTModelForSeq2SeqLM.from_pretrained(out, file_name="model.onnx")
+    model_quant.quantize(save_dir=out, per_channel=False, is_static=False)
+    vocab = tok.get_vocab()
+    id_to_token = {str(v): k for k, v in vocab.items()}
+    spec = {
+        "token_to_id": vocab,
+        "id_to_token": id_to_token,
+        "special_tokens": {"bos": tok.bos_token_id or 0, "eos": tok.eos_token_id or 2}
+    }
+    with open(out/"vocab.json", "w", encoding="utf-8") as f:
+        json.dump(spec, f, ensure_ascii=False)
+
+export("Helsinki-NLP/opus-mt-ne-en", "build/ne_en")
+export("Helsinki-NLP/opus-mt-si-en", "build/si_en")
+PY
+          # Copy exported files into Flutter assets
+          cp build/ne_en/model.onnx assets/models/ne_en/model.onnx || cp build/ne_en/model-quantized.onnx assets/models/ne_en/model.onnx
+          cp build/ne_en/source.spm assets/models/ne_en/spm.model || true
+          cp build/ne_en/vocab.json assets/models/ne_en/vocab.json
+          cp build/si_en/model.onnx assets/models/si_en/model.onnx || cp build/si_en/model-quantized.onnx assets/models/si_en/model.onnx
+          cp build/si_en/source.spm assets/models/si_en/spm.model || true
+          cp build/si_en/vocab.json assets/models/si_en/vocab.json
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:
