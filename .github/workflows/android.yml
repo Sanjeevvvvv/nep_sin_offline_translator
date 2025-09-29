@@ -26,10 +26,10 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-pip-
 
-      - name: Install Python deps for ONNX export
+      - name: Install Python deps for ONNX export (pinned)
         working-directory: nep_sin_offline_translator
         run: |
-          echo "optimum[onnxruntime]\ntransformers==4.43.3\nsentencepiece\nonnx\nonnxruntime\nonnxruntime-tools" > requirements-ci.txt
+          echo "optimum==1.20.0\ntransformers==4.41.1\nsentencepiece==0.2.0\nonnx==1.16.1\nonnxruntime==1.17.3\nprotobuf>=3.20,<5" > requirements-ci.txt
           python -m pip install --upgrade pip
           pip install -r requirements-ci.txt
 
@@ -55,8 +55,7 @@ def export(model_id: str, out_dir: str):
     model = ORTModelForSeq2SeqLM.from_pretrained(model_id, export=True, use_io_binding=False)
     model.save_pretrained(out)
     tok.save_pretrained(out)
-    model_quant = ORTModelForSeq2SeqLM.from_pretrained(out, file_name="model.onnx")
-    model_quant.quantize(save_dir=out, per_channel=False, is_static=False)
+    # Skip quantization in CI to avoid potential version conflicts; exported model.onnx is used as-is.
     vocab = tok.get_vocab()
     id_to_token = {str(v): k for k, v in vocab.items()}
     spec = {
@@ -71,11 +70,14 @@ export("Helsinki-NLP/opus-mt-ne-en", "build/ne_en")
 export("Helsinki-NLP/opus-mt-si-en", "build/si_en")
 PY
           # Copy exported files into Flutter assets
-          cp build/ne_en/model.onnx assets/models/ne_en/model.onnx || cp build/ne_en/model-quantized.onnx assets/models/ne_en/model.onnx
-          cp build/ne_en/source.spm assets/models/ne_en/spm.model || true
+          cp build/ne_en/model.onnx assets/models/ne_en/model.onnx
+          # Prefer source.spm if present; otherwise try tokenizer.model; otherwise fallback to tokenizer.json (not used by light tokenizer)
+          if [ -f build/ne_en/source.spm ]; then cp build/ne_en/source.spm assets/models/ne_en/spm.model; fi
+          if [ -f build/ne_en/tokenizer.model ]; then cp build/ne_en/tokenizer.model assets/models/ne_en/spm.model; fi
           cp build/ne_en/vocab.json assets/models/ne_en/vocab.json
-          cp build/si_en/model.onnx assets/models/si_en/model.onnx || cp build/si_en/model-quantized.onnx assets/models/si_en/model.onnx
-          cp build/si_en/source.spm assets/models/si_en/spm.model || true
+          cp build/si_en/model.onnx assets/models/si_en/model.onnx
+          if [ -f build/si_en/source.spm ]; then cp build/si_en/source.spm assets/models/si_en/spm.model; fi
+          if [ -f build/si_en/tokenizer.model ]; then cp build/si_en/tokenizer.model assets/models/si_en/spm.model; fi
           cp build/si_en/vocab.json assets/models/si_en/vocab.json
 
       - name: Setup Java
